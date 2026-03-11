@@ -107,15 +107,16 @@ async function main() {
   }
 
   // ── Step 4: ตั้งเป็น default ──────────────────────────────
+  // endpoint ที่ถูกต้อง: POST /user/all/richmenu/{richMenuId}
   console.log("\n🔗 ตั้งเป็น Default Rich Menu...");
   await axios.post(
-    `${BASE}/default/${richMenuId}`,
+    `https://api.line.me/v2/bot/user/all/richmenu/${richMenuId}`,
     {},
     { headers: HEADERS }
   );
-  console.log("   ✅ เสร็จแล้ว! Rich Menu พร้อมใช้งาน\n");
+  console.log("   ✅ เสร็จแล้ว! Rich Menu พร้อมใช้งานค่ะ\n");
   console.log(`   Rich Menu ID: ${richMenuId}`);
-  console.log("   เปิดแชท LINE OA ดูได้เลยครับ 🎉");
+  console.log("   เปิดแชท LINE OA ดูได้เลยค่ะ 🌸");
 }
 
 main().catch((err) => {

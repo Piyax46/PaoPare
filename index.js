@@ -44,11 +44,12 @@ function fmtDate(isoString) {
 //  STATE (bot_state table)
 // ════════════════════════════════════════════════════════════════
 async function getState(userId) {
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from("bot_state")
     .select("*")
     .eq("user_id", userId)
     .maybeSingle();
+  if (error) console.error("getState error:", error);
   if (!data) return { mode: null, data: {} };
   return {
     mode: data.mode,
@@ -57,14 +58,16 @@ async function getState(userId) {
 }
 
 async function setState(userId, mode, data = {}) {
-  await supabase.from("bot_state").upsert(
+  const { error } = await supabase.from("bot_state").upsert(
     { user_id: userId, mode, data, updated_at: new Date().toISOString() },
     { onConflict: "user_id" }
   );
+  if (error) console.error("setState error:", error);
 }
 
 async function clearState(userId) {
-  await supabase.from("bot_state").delete().eq("user_id", userId);
+  const { error } = await supabase.from("bot_state").delete().eq("user_id", userId);
+  if (error) console.error("clearState error:", error);
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -76,7 +79,10 @@ async function saveSession(userId, title, type, summary) {
     .insert({ user_id: userId, title, type, summary })
     .select("id")
     .single();
-  if (error) throw error;
+  if (error) {
+    console.error("saveSession error:", error);
+    throw error;
+  }
   return data.id;
 }
 
@@ -88,7 +94,8 @@ async function getSessions(userId, type = null, limit = 10) {
     .order("created_at", { ascending: false })
     .limit(limit);
   if (type) q = q.eq("type", type);
-  const { data } = await q;
+  const { data, error } = await q;
+  if (error) console.error("getSessions error:", error);
   return data || [];
 }
 
@@ -270,16 +277,25 @@ async function handleMessage(event) {
     });
   }
 
+  // QUICK INCOME & EXPENSE GUIDE
+  if (text === "บันทึกรายรับ") {
+    return client.replyMessage(replyToken, {
+      type: "text",
+      text: "💚 บันทึกรายรับ\nพิมพ์บวก (+) ตามด้วยจำนวนเงินและหัวข้อนะคะ\nเช่น: +5000 เงินเดือน\nหรือพิมพ์: บันทึกรายรับ 5000 เงินเดือน",
+    });
+  }
+  if (text === "บันทึกรายจ่าย") {
+    return client.replyMessage(replyToken, {
+      type: "text",
+      text: "❤️ บันทึกรายจ่าย\nพิมพ์ลบ (-) ตามด้วยจำนวนเงินและหัวข้อนะคะ\nเช่น: -60 ข้าวกลางวัน\nหรือพิมพ์: บันทึกรายจ่าย 60 ข้าวกลางวัน",
+    });
+  }
+
   // QUICK INCOME
-  if (/^\+\d/.test(text)) {
-    const m = text.match(/^\+(\d+(?:\.\d+)?)\s*(.*)/);
-    if (!m)
-      return client.replyMessage(replyToken, {
-        type: "text",
-        text: "❌ รูปแบบไม่ถูกต้องค่ะ ลองใหม่นะคะ\nตัวอย่าง: +5000 เงินเดือน",
-      });
-    const amount = parseFloat(m[1]);
-    const title = m[2].trim() || "รายรับ";
+  let matchIncome = text.match(/^(?:\+|บันทึกรายรับ\s*)(\d+(?:\.\d+)?)\s*(.*)/);
+  if (matchIncome) {
+    const amount = parseFloat(matchIncome[1]);
+    let title = matchIncome[2].replace(/^บาท\s*/, '').trim() || "รายรับ";
     await saveSession(userId, title, "income", { amount, note: title });
     return client.replyMessage(replyToken, {
       type: "text",
@@ -288,15 +304,10 @@ async function handleMessage(event) {
   }
 
   // QUICK EXPENSE
-  if (/^-\d/.test(text)) {
-    const m = text.match(/^-(\d+(?:\.\d+)?)\s*(.*)/);
-    if (!m)
-      return client.replyMessage(replyToken, {
-        type: "text",
-        text: "❌ รูปแบบไม่ถูกต้องค่ะ ลองใหม่นะคะ\nตัวอย่าง: -60 ข้าวกลางวัน",
-      });
-    const amount = parseFloat(m[1]);
-    const title = m[2].trim() || "รายจ่าย";
+  let matchExpense = text.match(/^(?:\-|บันทึกรายจ่าย\s*)(\d+(?:\.\d+)?)\s*(.*)/);
+  if (matchExpense) {
+    const amount = parseFloat(matchExpense[1]);
+    let title = matchExpense[2].replace(/^บาท\s*/, '').trim() || "รายจ่าย";
     await saveSession(userId, title, "expense", { amount, note: title });
     return client.replyMessage(replyToken, {
       type: "text",
