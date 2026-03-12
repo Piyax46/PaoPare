@@ -586,7 +586,7 @@ function flexSplitWithQR(title, results, discount, phone, qrIds, sessionId) {
         contents: [
           {
             type: "image", url: qrUrl,
-            size: "200px", aspectMode: "fit", aspectRatio: "1:1",
+            size: "full", aspectMode: "fit", aspectRatio: "1:1",
           },
           {
             type: "text", text: `${fmt(r.finalPay)} บาท`,
