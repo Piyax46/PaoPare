@@ -579,18 +579,18 @@ function flexSplitWithQR(title, results, discount, phone, qrIds, sessionId) {
           { type: "text", text: r.item, color: C.textMid, size: "xs", align: "center" },
         ],
       },
+      hero: {
+        type: "image", url: qrUrl,
+        size: "full", aspectMode: "fit", aspectRatio: "1:1",
+        backgroundColor: "#FFFFFF",
+      },
       body: {
         type: "box", layout: "vertical",
         backgroundColor: C.white, paddingAll: "14px", spacing: "sm",
-        justifyContent: "center", alignItems: "center",
         contents: [
           {
-            type: "image", url: qrUrl,
-            size: "full", aspectMode: "fit", aspectRatio: "1:1",
-          },
-          {
             type: "text", text: `${fmt(r.finalPay)} บาท`,
-            color: C.peach, size: "xl", weight: "bold", align: "center", margin: "md"
+            color: C.peach, size: "xl", weight: "bold", align: "center"
           },
           sep,
           { type: "text", text: `📱 PromptPay: ${phoneFmt}`, color: C.textMid, size: "xs", align: "center", margin: "sm" },
@@ -1056,7 +1056,11 @@ app.post("/webhook", middleware(config), async (req, res) => {
     await Promise.all(req.body.events.map(handleEvent));
     res.status(200).json({ status: "ok" });
   } catch (err) {
-    console.error("Webhook error:", err);
+    // แสดง error detail จาก LINE API
+    if (err.originalError?.response?.data) {
+      console.error("LINE API error details:", JSON.stringify(err.originalError.response.data, null, 2));
+    }
+    console.error("Webhook error:", err.message || err);
     res.status(500).json({ error: err.message });
   }
 });
