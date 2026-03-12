@@ -1,6 +1,7 @@
 // ═══════════════════════════════════════════════════════════════
-//  เป๋าแพร — Line OA Daily Bot  v5  (Fixed + Recurring Edition)
-//  แก้ไข: budget bug, pie chart, routing + เพิ่ม recurring expense
+//  เป๋าแพร — Line OA Daily Bot  v6  (Smart Category Edition)
+//  เพิ่ม: smart category flow, เรียนรู้ keyword อัตโนมัติ
+//  แก้ไข: pie chart font (ASCII-safe legend), numbered categories
 // ═══════════════════════════════════════════════════════════════
 require("dotenv").config();
 const express = require("express");
@@ -150,6 +151,114 @@ async function getCatColor(userId, catName) {
   const found = userCats.find(c => c.name === catName);
   return found?.color || "#B0B0B0";
 }
+// ── Smart Category Helpers ────────────────────────────────────
+// เพิ่ม keyword ให้ category ที่มีอยู่แล้ว (เรียนรู้จาก user)
+async function learnKeyword(userId, catName, keyword) {
+  try {
+    // หา user category ที่มีอยู่
+    const { data } = await supabase.from("user_categories").select("*")
+      .eq("user_id", userId).eq("name", catName).maybeSingle();
+    const existingKw = Array.isArray(data?.keywords) ? data.keywords : [];
+    if (existingKw.includes(keyword.toLowerCase())) return; // มีแล้ว
+    const newKw = [...existingKw, keyword.toLowerCase()];
+    await supabase.from("user_categories").upsert(
+      { user_id: userId, name: catName, keywords: newKw, color: data?.color || "#B0B0B0", updated_at: new Date().toISOString() },
+      { onConflict: "user_id,name" }
+    );
+  } catch (e) { console.error("learnKeyword error:", e.message); }
+}
+
+// ตรวจว่า keyword match ใน user_categories หรือไม่ (user เคยสอนแล้ว)
+async function getUserCatMatch(userId, title) {
+  const lower = title.toLowerCase();
+  const userCats = await getUserCategories(userId);
+  for (const cat of userCats) {
+    const kws = Array.isArray(cat.keywords) ? cat.keywords : [];
+    if (kws.some(k => lower.includes(k.toLowerCase()))) return cat.name;
+  }
+  return null;
+}
+
+// ตรวจว่า keyword match ใน default categories หรือไม่
+function getDefaultCatMatch(title) {
+  const lower = title.toLowerCase();
+  for (const cat of DEFAULT_CATEGORIES) {
+    if (cat.keywords.some(k => lower.includes(k.toLowerCase()))) return cat.name;
+  }
+  return null;
+}
+
+// สร้าง quick reply ให้เลือกหมวดหมู่
+async function buildCatQuickReply(userId, suggestedCat) {
+  const allCats = await buildCatList(userId);
+  const items = [];
+  if (suggestedCat) {
+    items.push({ type: "action", action: { type: "message", label: `✅ ${suggestedCat.replace(/^.{1,3}\s/, "").substring(0, 12)}`, text: `__cat__${suggestedCat}` } });
+    items.push({ type: "action", action: { type: "message", label: "เลือกหมวดอื่น", text: "__cat__choose__" } });
+  } else {
+    allCats.slice(0, 11).forEach(c => {
+      items.push({ type: "action", action: { type: "message", label: c.name.substring(0, 20), text: `__cat__${c.name}` } });
+    });
+  }
+  items.push({ type: "action", action: { type: "message", label: "ไม่มีหมวด", text: "__cat__📦 อื่นๆ" } });
+  return { type: "quickReply", items: items.slice(0, 13) };
+}
+
+// สร้าง quick reply ให้เลือกหมวดทั้งหมด (สำหรับกรณีกด "เลือกหมวดอื่น")
+async function buildAllCatQuickReply(userId) {
+  const allCats = await buildCatList(userId);
+  const items = allCats.slice(0, 12).map(c => ({
+    type: "action", action: { type: "message", label: c.name.substring(0, 20), text: `__cat__${c.name}` }
+  }));
+  items.push({ type: "action", action: { type: "message", label: "ไม่มีหมวด", text: "__cat__📦 อื่นๆ" } });
+  return { type: "quickReply", items: items.slice(0, 13) };
+}
+
+// Main handler — ตัดสินใจว่าจะบันทึกทันที หรือถามหมวดก่อน
+async function handleExpenseRecord(userId, replyToken, amount, title, manualTag = null) {
+  // 1. ถ้า user ระบุ tag มาเอง → บันทึกทันที
+  if (manualTag) {
+    await saveSession(userId, title, "expense", { amount, note: title, category: manualTag });
+    const bState = await checkBudget(userId);
+    if (bState && bState.alert) {
+      return client.replyMessage(replyToken, flexWrap("แจ้งเตือนงบ", { type: "carousel", contents: [flexSuccess("expense", amount, title, manualTag).contents, budgetAlertBubble(bState)] }));
+    }
+    return client.replyMessage(replyToken, flexSuccess("expense", amount, title, manualTag));
+  }
+
+  // 2. ตรวจ user_categories ก่อน (เคยเรียนรู้แล้ว → บันทึกทันที)
+  const userMatch = await getUserCatMatch(userId, title);
+  if (userMatch) {
+    await saveSession(userId, title, "expense", { amount, note: title, category: userMatch });
+    const bState = await checkBudget(userId);
+    if (bState && bState.alert) {
+      return client.replyMessage(replyToken, flexWrap("แจ้งเตือนงบ", { type: "carousel", contents: [flexSuccess("expense", amount, title, userMatch).contents, budgetAlertBubble(bState)] }));
+    }
+    return client.replyMessage(replyToken, flexSuccess("expense", amount, title, userMatch));
+  }
+
+  // 3. ตรวจ default keywords → ถาม confirm
+  const defaultMatch = getDefaultCatMatch(title);
+  await setState(userId, "waiting_cat_confirm", { amount, title, suggested: defaultMatch });
+
+  if (defaultMatch) {
+    const qr = await buildCatQuickReply(userId, defaultMatch);
+    return client.replyMessage(replyToken, {
+      type: "text",
+      text: `"${title}" → ${defaultMatch} ใช่ไหมคะ? 🌸`,
+      quickReply: qr,
+    });
+  } else {
+    // ไม่รู้จักเลย → ให้เลือก
+    const qr = await buildAllCatQuickReply(userId);
+    return client.replyMessage(replyToken, {
+      type: "text",
+      text: `"${title}" จัดอยู่หมวดไหนดีคะ? 🌸`,
+      quickReply: qr,
+    });
+  }
+}
+
 function parseExpenseTag(text) {
   const tagMatch = text.match(/#([^\s]+)\s*$/);
   if (!tagMatch) return { cleanText: text, tag: null };
@@ -713,29 +822,28 @@ const { createCanvas } = require("@napi-rs/canvas");
 const chartStore = new Map();
 const CHART_EXPIRE_MS = 30 * 60 * 1000;
 
-// แก้ไข: รับ userId เพื่อใช้สี custom category
 async function generatePieChart(catEntries, total, userId) {
   const id = crypto.randomBytes(8).toString("hex");
-  const size = 600;
-  const canvas = createCanvas(size, size);
+  const W = 600, H = 460;
+  const canvas = createCanvas(W, H);
   const ctx = canvas.getContext("2d");
 
-  ctx.fillStyle = "#FFFFFF";
-  ctx.fillRect(0, 0, size, size);
+  // Background
+  ctx.fillStyle = "#FFF5F8";
+  ctx.fillRect(0, 0, W, H);
 
-  const cx = size / 2, cy = 240, radius = 160;
+  const cx = W / 2, cy = 210, radius = 170;
   let startAngle = -Math.PI / 2;
-  const defaultColors = ["#FF6B6B", "#C0885A", "#4ECDC4", "#45B7D1", "#96CEB4", "#FFEAA7", "#DDA0DD", "#B0B0B0"];
 
-  // หาสีของแต่ละ category รวม custom category
   const colorMap = {};
   for (const [cat] of catEntries) {
     colorMap[cat] = await getCatColor(userId, cat);
   }
 
-  catEntries.forEach(([cat, amount], i) => {
+  // Draw slices
+  catEntries.forEach(([cat, amount]) => {
     const sliceAngle = (amount / total) * 2 * Math.PI;
-    const color = colorMap[cat] || defaultColors[i % defaultColors.length];
+    const color = colorMap[cat] || "#B0B0B0";
     ctx.beginPath();
     ctx.moveTo(cx, cy);
     ctx.arc(cx, cy, radius, startAngle, startAngle + sliceAngle);
@@ -743,44 +851,51 @@ async function generatePieChart(catEntries, total, userId) {
     ctx.fillStyle = color;
     ctx.fill();
     ctx.strokeStyle = "#FFFFFF";
-    ctx.lineWidth = 3;
+    ctx.lineWidth = 4;
     ctx.stroke();
     startAngle += sliceAngle;
   });
 
-  // Donut center
+  // Donut hole
   ctx.beginPath();
-  ctx.arc(cx, cy, radius * 0.55, 0, 2 * Math.PI);
-  ctx.fillStyle = "#FFFFFF";
+  ctx.arc(cx, cy, radius * 0.52, 0, 2 * Math.PI);
+  ctx.fillStyle = "#FFF5F8";
   ctx.fill();
 
-  ctx.fillStyle = "#3A3A4A";
-  ctx.font = "bold 22px sans-serif";
-  ctx.textAlign = "center";
-  ctx.fillText("รวมรายจ่าย", cx, cy - 8);
+  // Center text — ASCII only (safe, no Thai font needed)
+  const totalFmt = Number(total).toLocaleString("en-US", { minimumFractionDigits: 2 });
   ctx.fillStyle = "#E87EA0";
-  ctx.font = "bold 28px sans-serif";
-  ctx.fillText(`${Number(total).toLocaleString("th-TH", { minimumFractionDigits: 2 })} ฿`, cx, cy + 25);
+  ctx.font = "bold 32px sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText(totalFmt, cx, cy - 4);
+  ctx.fillStyle = "#AAAABC";
+  ctx.font = "bold 18px sans-serif";
+  ctx.fillText("THB", cx, cy + 26);
 
-  // Legend
-  const legendY = 440;
-  const cols = Math.min(catEntries.length, 2);
-  const colWidth = size / cols;
+  // Legend — colored swatches + percentage numbers (ASCII only)
+  const legendStartY = 395;
+  const cols = Math.min(catEntries.length, 3);
+  const colW = W / cols;
   catEntries.forEach(([cat, amount], i) => {
     const col = i % cols;
     const row = Math.floor(i / cols);
-    const x = col * colWidth + 30;
-    const y = legendY + row * 35;
-    const color = colorMap[cat] || defaultColors[i % defaultColors.length];
+    const x = col * colW + colW * 0.12;
+    const y = legendStartY + row * 38;
+    const color = colorMap[cat] || "#B0B0B0";
     const pct = ((amount / total) * 100).toFixed(1);
+    const idx = i + 1;
+
+    // Colored circle
     ctx.beginPath();
-    ctx.arc(x + 8, y + 8, 8, 0, 2 * Math.PI);
+    ctx.arc(x + 10, y, 10, 0, 2 * Math.PI);
     ctx.fillStyle = color;
     ctx.fill();
+
+    // Number label + percentage (ASCII — always renders)
     ctx.fillStyle = "#3A3A4A";
-    ctx.font = "16px sans-serif";
+    ctx.font = "bold 16px sans-serif";
     ctx.textAlign = "left";
-    ctx.fillText(`${cat}  ${pct}%`, x + 22, y + 13);
+    ctx.fillText(`${idx}.  ${pct}%`, x + 26, y + 6);
   });
 
   const buffer = canvas.toBuffer("image/png");
@@ -815,10 +930,10 @@ async function flexCategorySummary(userId, sessions, monthLabel) {
   const totalExp = Object.values(catMap).reduce((a, b) => a + b, 0);
   const catEntries = Object.entries(catMap).sort((a, b) => b[1] - a[1]);
 
-  // Pie chart rows (text-based bars — ใช้เสมอ, ถ้ามี PUBLIC_URL จะเพิ่มรูป)
-  const catRows = catEntries.map(([cat, amount]) => {
+  // Category rows — numbered to match pie chart legend (1. 2. 3. ...)
+  const catRows = catEntries.map(([cat, amount], i) => {
     const pct = ((amount / totalExp) * 100).toFixed(1);
-    const barFill = Math.round(Number(pct) / 100 * 10); // 0-10
+    const barFill = Math.round(Number(pct) / 100 * 10);
     const bar = "█".repeat(barFill) + "░".repeat(10 - barFill);
     return {
       type: "box", layout: "vertical", margin: "sm",
@@ -826,14 +941,14 @@ async function flexCategorySummary(userId, sessions, monthLabel) {
         {
           type: "box", layout: "horizontal",
           contents: [
-            { type: "text", text: cat, color: C.textDark, size: "sm", flex: 4 },
+            { type: "text", text: `${i + 1}.  ${cat}`, color: C.textDark, size: "sm", flex: 4 },
             { type: "text", text: `${pct}%`, color: C.pink, size: "sm", flex: 1, align: "end", weight: "bold" },
           ],
         },
         {
           type: "box", layout: "horizontal", margin: "xs",
           contents: [
-            { type: "text", text: `${fmt(amount)} บาท`, color: C.textMid, size: "xs", flex: 4 },
+            { type: "text", text: `    ${fmt(amount)} บาท`, color: C.textMid, size: "xs", flex: 4 },
           ],
         },
       ],
@@ -1091,13 +1206,7 @@ async function handleMessage(event) {
     const { cleanText, tag } = parseExpenseTag(m[2].trim());
     const amount = parseFloat(m[1]);
     const title = cleanText || "รายจ่าย";
-    const category = tag ? tag : await getCategory(userId, title);
-    await saveSession(userId, title, "expense", { amount, note: title, category });
-    const bState = await checkBudget(userId);
-    if (bState && bState.alert) {
-      return client.replyMessage(replyToken, flexWrap("แจ้งเตือนงบ", { type: "carousel", contents: [flexSuccess("expense", amount, title, category).contents, budgetAlertBubble(bState)] }));
-    }
-    return client.replyMessage(replyToken, flexSuccess("expense", amount, title, category));
+    return handleExpenseRecord(userId, replyToken, amount, title, tag || null);
   }
 
   // ── ปุ่ม Rich Menu → เปิด flow ──────────────────────────────
@@ -1130,17 +1239,60 @@ async function handleMessage(event) {
     const amount = parseFloat(m[1]);
     const { cleanText, tag } = parseExpenseTag(m[2].trim());
     const title = cleanText || "รายจ่าย";
-    const category = tag ? tag : await getCategory(userId, title);
-    await saveSession(userId, title, "expense", { amount, note: title, category });
     await clearState(userId);
-    const bState = await checkBudget(userId);
-    if (bState && bState.alert) {
-      return client.replyMessage(replyToken, flexWrap("แจ้งเตือนงบ", { type: "carousel", contents: [flexSuccess("expense", amount, title, category).contents, budgetAlertBubble(bState)] }));
-    }
-    return client.replyMessage(replyToken, flexSuccess("expense", amount, title, category));
+    return handleExpenseRecord(userId, replyToken, amount, title, tag || null);
   }
 
-  // ── SUMMARY ──────────────────────────────────────────────────
+  // ── FLOW: รอเลือกหมวดหมู่ ────────────────────────────────────
+  if (mode === "waiting_cat_confirm") {
+    const { amount, title } = sd;
+
+    // user กด __cat__XXX หรือพิมพ์ชื่อหมวดตรงๆ
+    let chosenCat = null;
+
+    if (text.startsWith("__cat__")) {
+      const raw = text.replace("__cat__", "");
+      if (raw === "choose__") {
+        // กด "เลือกหมวดอื่น" → แสดงรายการทั้งหมด
+        const qr = await buildAllCatQuickReply(userId);
+        return client.replyMessage(replyToken, {
+          type: "text", text: "เลือกหมวดที่ต้องการเลยนะคะ 🌸",
+          quickReply: qr,
+        });
+      }
+      chosenCat = raw;
+    } else {
+      // พิมพ์ชื่อหมวดตรงๆ — ตรวจว่าตรงกับหมวดที่มีอยู่ไหม
+      const allCats = await buildCatList(userId);
+      const found = allCats.find(c => c.name === text || c.name.includes(text));
+      if (found) chosenCat = found.name;
+    }
+
+    if (!chosenCat) {
+      // ไม่รู้จัก → ถามใหม่
+      const qr = await buildAllCatQuickReply(userId);
+      return client.replyMessage(replyToken, {
+        type: "text", text: "ไม่เจอหมวดนั้นค่ะ ลองเลือกจากนี้เลยนะคะ 🌸",
+        quickReply: qr,
+      });
+    }
+
+    // บันทึก expense + เรียนรู้ keyword
+    await clearState(userId);
+    await saveSession(userId, title, "expense", { amount, note: title, category: chosenCat });
+
+    // เรียนรู้ keyword จาก title → category นี้ (เฉพาะ user category หรือสร้างใหม่)
+    const keyword = title.toLowerCase().trim();
+    if (keyword.length >= 2) {
+      await learnKeyword(userId, chosenCat, keyword);
+    }
+
+    const bState = await checkBudget(userId);
+    if (bState && bState.alert) {
+      return client.replyMessage(replyToken, flexWrap("แจ้งเตือนงบ", { type: "carousel", contents: [flexSuccess("expense", amount, title, chosenCat).contents, budgetAlertBubble(bState)] }));
+    }
+    return client.replyMessage(replyToken, flexSuccess("expense", amount, title, chosenCat));
+  }
   if (text === "สรุป" || text === "summary") {
     return client.replyMessage(replyToken, await flexSummary(userId));
   }
