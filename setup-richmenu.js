@@ -85,7 +85,7 @@ async function main() {
 
   // ── Step 3: Upload รูปภาพ ─────────────────────────────────
   // ถ้ามีไฟล์ richmenu.png ใน folder เดียวกัน ให้ upload
-  const imgPath = "./richmenu.png";
+  const imgPath = "./richmenu.jpg";
   if (fs.existsSync(imgPath)) {
     console.log("\n🖼️  Upload รูป Rich Menu...");
     const imgBuffer = fs.readFileSync(imgPath);
@@ -95,7 +95,7 @@ async function main() {
       {
         headers: {
           Authorization: `Bearer ${TOKEN}`,
-          "Content-Type": "image/png",
+          "Content-Type": "image/jpeg",
         },
       }
     );
