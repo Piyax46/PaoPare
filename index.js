@@ -566,7 +566,7 @@ function flexSplitWithQR(title, results, discount, phone, qrIds, sessionId) {
     const qrUrl = `${baseUrl}/qr/${qrIds[i]}`;
     const postbackData = `confirm_pay|${sessionId}|${i}|${qrIds[i]}|${r.name}`;
     return {
-      type: "bubble", size: "kilo",
+      type: "bubble", size: "mega",
       header: {
         type: "box", layout: "vertical",
         backgroundColor: C.peachLight, paddingAll: "14px", spacing: "xs",
