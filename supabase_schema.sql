@@ -37,9 +37,31 @@ CREATE TABLE bot_state (
   updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- ── 3. Row Level Security ──────────────────────────────────────
-ALTER TABLE sessions  ENABLE ROW LEVEL SECURITY;
-ALTER TABLE bot_state ENABLE ROW LEVEL SECURITY;
+-- ── 3. user_budgets — เก็บงบประมาณรายเดือน ─────────────────────
+CREATE TABLE user_budgets (
+  user_id     TEXT        PRIMARY KEY,
+  amount      NUMERIC     NOT NULL DEFAULT 0,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 
-CREATE POLICY "allow_all_sessions"   ON sessions   FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "allow_all_bot_state"  ON bot_state  FOR ALL USING (true) WITH CHECK (true);
+-- ── 4. Row Level Security ──────────────────────────────────────
+ALTER TABLE sessions      ENABLE ROW LEVEL SECURITY;
+ALTER TABLE bot_state     ENABLE ROW LEVEL SECURITY;
+ALTER TABLE user_budgets  ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "allow_all_sessions"   ON sessions     FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "allow_all_bot_state"  ON bot_state    FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "allow_all_budgets"    ON user_budgets FOR ALL USING (true) WITH CHECK (true);
+CREATE TABLE user_categories (
+  id         BIGSERIAL PRIMARY KEY,
+  user_id    TEXT NOT NULL,
+  name       TEXT NOT NULL,
+  keywords   JSONB NOT NULL DEFAULT '[]',
+  color      TEXT DEFAULT '#B898D8',
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(user_id, name)
+);
+ALTER TABLE user_categories ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "allow_all" ON user_categories FOR ALL USING (true) WITH CHECK (true);
